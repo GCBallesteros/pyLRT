@@ -1,4 +1,5 @@
 import warnings
+from ast import parse
 import numpy as np
 import subprocess
 import io
@@ -6,6 +7,7 @@ import os
 import tempfile
 import xarray as xr
 
+from .parser import OutputParser
 
 class RadTran():
     '''The base class for handling a LibRadTran instance.
@@ -16,22 +18,31 @@ class RadTran():
 
     Set the verbose option to retrieve the verbose output from UVSPEC.'''
 
-    def __init__(self, folder):
+    def __init__(self, folder, output_parser=None):
         '''Create a radiative transfer object.
         folder - the folder where libradtran was compiled/installed'''
         self.folder = folder
         self.options = {}
         self.cloud = None
         self.ice_cloud = None
+        self.parser = output_parser 
 
-    def run(self, verbose=False, print_input=False, print_output=False, regrid=True, quiet=False):
+    def run(self, verbose=False, print_input=False, print_output=False, regrid=True, quiet=False, parse=None, **parse_kwargs):
         '''Run the radiative transfer code
         - verbose - retrieves the output from a verbose run, including atmospheric
                     structure and molecular absorption
         - print_input - print the input file used to run libradtran
         - print_output - echo the output
         - regrid - converts verbose output to the regrid/output grid, best to leave as True
-        - quiet - if True, do not print UVSPEC warnings'''
+        - quiet - if True, do not print UVSPEC warnings
+        - parse - if True, parse the output into an xarray dataset.
+        - parse_kwargs - keyword arguments to pass to the parse_output function
+            - dims - a list of dimensions to use for the output (ordered).
+                     Default is ['lambda']. Note that 'lambda' is renamed to 'wvl'
+                     in the output dataset.
+            - **dim_specs - kwarg values for dimensions whose values are not
+                          in the output, e.g. zout=[0,5,120].
+        '''
         if self.cloud:  # Create cloud file
             tmpcloud = self._cloud_input(type="liquid", print_input=print_input)
         if self.ice_cloud:  # Create ice cloud file
@@ -93,6 +104,10 @@ class RadTran():
             error = ''.join(error)
             raise ValueError(error)
 
+        output_data = np.genfromtxt(io.StringIO(process.stdout))
+        if parse or (parse is None and (self.parser is not None or "parser" in parse_kwargs)):
+            output_data = self._parse_output(output_data, **parse_kwargs)
+
         if print_output:
             print('Output file:')
             print(process.stdout)
@@ -103,9 +118,18 @@ class RadTran():
                 pass
             self.options['quiet'] = ''
 
-            return (np.genfromtxt(io.StringIO(process.stdout)),
+            return (output_data,
                     _read_verbose(io.StringIO(process.stderr), regrid=regrid))
-        return np.genfromtxt(io.StringIO(process.stdout))
+        return output_data
+
+    def _parse_output(self, output, parser=None, **parse_kwargs):
+        if self.parser is None and parser is not None and parse_kwargs == {}:
+            self.parser = parser
+        elif self.parser is None:
+            self.parser = OutputParser(**parse_kwargs)
+        elif parser is not None and parse_kwargs != {}:
+            raise ValueError("Cannot simultaneously pass parser and parse_kwargs.")
+        return self.parser.parse_output(output, self)
     
     def add_cloud(
         self, type="liquid", height=None, base_height=None, thickness=None, 
@@ -150,7 +174,6 @@ class RadTran():
                 "iwc":[0,iwc],
                 "re":[0,re],
             }
-        
 
     def _cloud_input(self, type="liquid", print_input=False):
         '''Process a cloud to the input format required for LRT'''
@@ -220,16 +243,20 @@ def _skiplines(f, n):
         _ = f.readline()
 
 
-def _skiplines_title(f, n, t):
+def _skiplines_title(f, n, t, ignore_pattern=None):
     '''Skip n lines from file f. Return the title on line t'''
-    for i in range(n):
+    i = 0
+    while i<n:
         if i == t:
             title = [a.strip() for a in f.readline().strip().split('|')]
-        _ = f.readline()
+        line = f.readline()
+        if ignore_pattern and (line.strip().startswith(ignore_pattern)):
+            continue
+        i += 1
     return title
 
 
-def _match_table(f, start_idstr, nheader_rows, header_row=None):
+def _match_table(f, start_idstr, nheader_rows, header_row=None, ignore_pattern=None):
     '''Get the data from an individual 2D table. 
     start_idstr - string to locate table
     nheader_rows - number of rows to skip before the data'''
@@ -237,7 +264,7 @@ def _match_table(f, start_idstr, nheader_rows, header_row=None):
         line = f.readline()
         if line.startswith(start_idstr):
             break
-    title = _skiplines_title(f, nheader_rows, header_row)
+    title = _skiplines_title(f, nheader_rows, header_row, ignore_pattern=ignore_pattern)
     profiles = []
     while True:
         line = f.readline()
@@ -256,7 +283,7 @@ def _read_table(f, start_idstr, labels, wavelengths, regrid=False):
     optprop = []
     num_wvl = len(wavelengths['wvl'])
     for wv in range(num_wvl):
-        temp = _match_table(f, start_idstr, 4, 2)
+        temp = _match_table(f, start_idstr, 3, 2)
         optprop.append(temp[1])
         # Could potentially read variable names from the table in future
         #optproplabels = temp[0]
@@ -297,7 +324,7 @@ def _get_wavelengths(f):
 
 
 def _read_verbose(f, regrid=False):
-    '''Readin the uotput from 'verbose' to a set of xarrays'''
+    '''Readin the output from 'verbose' to a set of xarrays'''
     try:
         wavelengths = _get_wavelengths(f)
     except:
@@ -306,7 +333,8 @@ def _read_verbose(f, regrid=False):
             print(f.readline())
         return None
 
-    profiles = _match_table(f, '*** Scaling profiles', 4, 1)
+    # The ignore pattern ensures that rows that just describe the scaling are skipped
+    profiles = _match_table(f, '*** Scaling profiles', 3, 1, ignore_pattern='...')
     proflabels = ['lc', 'z', 'p', 'T', 'air', 'o3',
                   'o2', 'h2o', 'co2', 'no2', 'o4']
     profiles = xr.Dataset(
