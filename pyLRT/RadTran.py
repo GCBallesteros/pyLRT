@@ -109,9 +109,14 @@ class RadTran():
     
     def add_cloud(
         self, type="liquid", height=None, base_height=None, thickness=None, 
-        lwc=None, iwc=None, re=None, od=None
+            lwc=None, iwc=None, re=None, od=None, assumption=None
     ):
-        '''Add a cloud layer'''
+        '''Add a cloud layer - current use not recommended as requires
+        assumptions about the cloud profile that are not explicit
+        yet.
+        '''
+        if assumption is None:
+            raise ValueError("Assumption must be stated")
         if height is None:
             raise ValueError("height must be provided")
         if base_height is None:
