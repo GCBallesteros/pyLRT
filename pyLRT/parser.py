@@ -1,8 +1,11 @@
+from typing import TYPE_CHECKING
+
 import numpy as np
 import xarray as xr
 from numpy.typing import ArrayLike
 
-from pyLRT import RadTran
+if TYPE_CHECKING:
+    from pyLRT import RadTran
 
 default_output = {
     "disort": "lambda edir edn eup uavgdir uavgdn uavgup",
