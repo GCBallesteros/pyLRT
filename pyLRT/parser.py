@@ -19,7 +19,7 @@ class OutputParser:
         self.dims = dims
         self.dim_specs = dim_specs
 
-    def parse_output(self, output: ArrayLike, rt: RadTran):
+    def parse_output(self, output: ArrayLike, rt: "RadTran"):
         """
         Parse the output of a libRadtran run into an xarray dataset
 
@@ -194,7 +194,7 @@ def _remove_dims(da):
     return da
 
 
-def _get_columns(rt: RadTran):
+def _get_columns(rt: "RadTran"):
     """Get the column names for the output of a libRadtran run"""
     try:
         solver = rt.options.get("rte_solver", "disort")
